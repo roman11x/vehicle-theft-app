@@ -20,6 +20,7 @@ if more data is still needed.
 import pandas as pd
 import numpy as np
 from collections import deque
+from logger import flatten_reading
 
 
 # How many seconds per window — must match what the model was trained on.
@@ -64,26 +65,15 @@ class SensorBuffer:
         self._since_last_window = 0
 
     def add(self, reading: dict):
-        """
-        Add one incoming reading to the buffer.
-
-        Args:
-            reading: The flattened reading dict (same format as a CSV row,
-                     as produced by logger.flatten_reading).
-
-        Returns:
-            A pandas DataFrame with exactly WINDOW_SIZE rows and all
-            derived signal columns added, ready for the scorer.
-            Returns None if not enough data has accumulated yet.
-        """
-        self._readings.append(reading)
+        # Flatten the nested JSON reading to a flat dict before storing,
+        # so _build_window() can reference columns by name (e.g. "speed")
+        # without having to unpack nested dicts.
+        self._readings.append(flatten_reading(reading))
         self._since_last_window += 1
 
-        # Not enough data yet for even one window.
         if len(self._readings) < BUFFER_SIZE:
             return None
 
-        # A full 30-second window has accumulated since the last one.
         if self._since_last_window >= WINDOW_SIZE:
             self._since_last_window = 0
             return self._build_window()
