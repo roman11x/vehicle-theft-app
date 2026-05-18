@@ -131,23 +131,23 @@ def _score_window_traj(window_df):
 
     # Strategy A — 40 GPS-filtered features
     # For any feature column missing from the window, fill with 0.
-    X_A = np.zeros((len(window_df), len(feat_A)))
+    X_A = np.zeros((1, len(feat_A)))
     for i, col in enumerate(feat_A):
         if col in window_df.columns:
-            X_A[:, i] = window_df[col].values
+            X_A[0, i] = window_df[col].values[0]
 
     # predict_proba returns shape (n_rows, n_drivers).
     # .max(axis=1) gives the highest confidence for any known driver per row.
     # We then take the mean across the 30 rows as the window-level pmax.
-    pmax_A = float(clf_A.predict_proba(X_A).max(axis=1).mean())
+    pmax_A = float(clf_A.predict_proba(X_A).max(axis=1)[0])
 
     # Strategy C — 130 route-invariant features
-    X_C = np.zeros((len(window_df), len(feat_C)))
+    X_C = np.zeros((1, len(feat_C)))
     for i, col in enumerate(feat_C):
         if col in window_df.columns:
-            X_C[:, i] = window_df[col].values
+            X_C[0, i] = window_df[col].values[0]
 
-    pmax_C = float(clf_C.predict_proba(X_C).max(axis=1).mean())
+    pmax_C = float(clf_C.predict_proba(X_C).max(axis=1)[0])
 
     # A window is suspicious if the driver doesn't look like
     # any known family member — i.e. pmax is LOW (below threshold).
@@ -310,12 +310,16 @@ class TripScorer:
 
         # ── Reason string ─────────────────────────────────────────────────────
         # Plain English explanation for the Android app to display.
-        if self._consecutive_suspicious >= CONSECUTIVE_REQUIRED:
-            reason = f"Driving pattern unlike any registered driver ({self._consecutive_suspicious} consecutive windows)"
-        elif s_loc > 0:
-            reason = "GPS signal inconsistency detected"
-        elif self.windows_scored < 10:
+        if self.windows_scored < 10:
             reason = f"Collecting data ({self.windows_scored * 30}s of {10 * 30}s needed)"
+        elif self._consecutive_suspicious >= CONSECUTIVE_REQUIRED:
+            reason = f"Driving pattern unlike any registered driver ({self._consecutive_suspicious} consecutive windows flagged)"
+        elif alert == "YELLOW":
+            reason = "Driving pattern is unusual — monitoring"
+        elif alert == "ORANGE":
+            reason = "Driving pattern significantly unlike registered drivers"
+        elif alert == "RED":
+            reason = "Unauthorized driver suspected"
         else:
             reason = "Driving pattern consistent with registered drivers"
 

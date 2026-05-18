@@ -82,68 +82,75 @@ class SensorBuffer:
 
     def _build_window(self):
         """
-        Extract the current buffer contents and prepare a feature DataFrame.
+        Extract the current buffer contents, compute derived signals,
+        and summarize into a single-row feature DataFrame.
 
-        Steps:
-          1. Convert the deque to a DataFrame.
-          2. Resample to a clean 1Hz grid (handles irregular arrival times).
-          3. Compute derived signals that the model needs.
-          4. Return only the last WINDOW_SIZE rows (drop the lookback rows).
+        This matches exactly what the notebook's extract_windows() function
+        does during training — each 30-second window becomes ONE row of
+        40 features (10 signals × 4 statistics each).
+
+        The 10 signals are:
+            acceleration, jerk, rpm_rate, throttle_rate,
+            speed_rpm_ratio, throttle_rpm_ratio,
+            accel_x, accel_y, accel_mag, gyro_z
+
+        The 4 statistics per signal are:
+            mean, std, p25, p75
 
         Returns:
-            DataFrame with WINDOW_SIZE rows and all feature columns present.
+            A single-row DataFrame with exactly 40 named feature columns.
         """
         df = pd.DataFrame(list(self._readings))
 
         # Parse timestamps and set as index for resampling.
-        df["ts"] = pd.to_datetime(df["ts"])
+        df["ts"] = pd.to_datetime(df["ts"], format="ISO8601")
         df = df.set_index("ts").sort_index()
 
-        # Resample to exactly 1Hz by taking the mean within each second.
-        # This smooths out the slight irregularity in arrival times.
-        # numeric_only=True skips the session_id string column.
+        # Resample to exactly 1Hz — handles irregular arrival times.
         df = df.resample("1s").mean(numeric_only=True)
-
-        # Forward-fill any gaps left by resampling (e.g. a dropped reading).
-        # limit=2 means we won't fill more than 2 consecutive missing seconds.
         df = df.ffill(limit=2)
 
-        # --- Derived signals ---
-        # These are the signals the model was trained on that are not
-        # directly measured but computed from the raw OBD/IMU signals.
-
-        # acceleration: how fast speed is changing (m/s² proxy from km/h)
+        # --- Compute derived signals ---
         df["acceleration"] = df["speed"].diff()
-
-        # jerk: how fast acceleration is changing (smoothness of driving)
         df["jerk"] = df["acceleration"].diff()
-
-        # rpm_rate: how fast the engine RPM is changing
         df["rpm_rate"] = df["rpm"].diff()
-
-        # throttle_rate: how quickly the driver is pressing/releasing the pedal
         df["throttle_rate"] = df["throttle"].diff()
-
-        # speed_rpm_ratio: proxy for which gear the driver is in
-        # Adding 100 to rpm avoids division by zero at engine idle/off
         df["speed_rpm_ratio"] = df["speed"] / (df["rpm"] + 100)
-
-        # throttle_rpm_ratio: how the throttle pedal maps to engine response
         df["throttle_rpm_ratio"] = df["throttle"] / (df["rpm"] + 100)
-
-        # accel_mag: total acceleration magnitude, rotation-invariant.
-        # This is the one IMU feature that works even if the phone mount
-        # angle is slightly off, because it doesn't depend on axis alignment.
         df["accel_mag"] = np.sqrt(
-            df["accel_x"]**2 + df["accel_y"]**2 + df["accel_z"]**2
+            df["accel_x"] ** 2 + df["accel_y"] ** 2 + df["accel_z"] ** 2
         )
 
-        # Replace any inf or NaN with 0.
-        # NaN appears on the first row of diff() (no previous row to subtract).
-        # inf can appear if rpm+100 somehow rounds to 0 (shouldn't happen but safe).
         df = df.replace([np.inf, -np.inf], np.nan).fillna(0)
 
-        # Return only the window rows, not the lookback rows.
-        # The lookback rows were only needed to give diff() a previous value
-        # on the first row of the window — we don't score them.
-        return df.tail(WINDOW_SIZE).reset_index(drop=True)
+        # Use only the window rows, not the lookback rows.
+        window = df.tail(WINDOW_SIZE)
+
+        # --- Compute summary statistics ---
+        # These are the 10 signals the model was trained on.
+        SIGNALS = [
+            "acceleration", "jerk", "rpm_rate", "throttle_rate",
+            "speed_rpm_ratio", "throttle_rpm_ratio",
+            "accel_x", "accel_y", "accel_mag", "gyro_z"
+        ]
+
+        # Build one row of 40 features: signal_mean, signal_std,
+        # signal_p25, signal_p75 for each of the 10 signals.
+        features = {}
+        for signal in SIGNALS:
+            if signal in window.columns:
+                col = window[signal]
+                features[f"{signal}_mean"] = col.mean()
+                features[f"{signal}_std"] = col.std()
+                features[f"{signal}_p25"] = col.quantile(0.25)
+                features[f"{signal}_p75"] = col.quantile(0.75)
+            else:
+                # Signal missing — fill with zeros so scorer doesn't crash.
+                features[f"{signal}_mean"] = 0.0
+                features[f"{signal}_std"] = 0.0
+                features[f"{signal}_p25"] = 0.0
+                features[f"{signal}_p75"] = 0.0
+
+        # Return as a single-row DataFrame.
+        # The scorer calls predict_proba on this, so shape must be (1, 40).
+        return pd.DataFrame([features])
