@@ -1,0 +1,11 @@
+# Python
+server/.venv/
+server/__pycache__/
+server/*.pyc
+server/*.pkl
+*.csv
+
+# Android (add later)
+android/.gradle/
+android/build/
+android/local.properties
